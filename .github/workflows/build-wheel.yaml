@@ -1,0 +1,71 @@
+name: Build DRTK Wheels (All Systems)
+
+on:
+  workflow_dispatch: # Allows you to manually trigger the build from GitHub
+
+jobs:
+  build_wheels:
+    name: Build (${{ matrix.os }}, Py ${{ matrix.python }}, CUDA ${{ matrix.cuda }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # If one build fails, keep running the others
+      matrix:
+        # Targeting both Linux and Windows
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.11', '3.12', '3.13']
+        cuda: ['12.6', '12.8', '13.0']
+    
+    defaults:
+      run:
+        shell: bash # Forces Windows to use Bash so our scripts work uniformly everywhere
+
+    steps:
+      - name: Checkout DRTK repository
+        uses: actions/checkout@v4
+        with:
+          repository: facebookresearch/DRTK
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.14
+        with:
+          # Appends .0 because the action expects full semantic versions
+          cuda: '${{ matrix.cuda }}.0' 
+
+      - name: Install PyTorch & Build Dependencies
+        run: |
+          # Format CUDA version for PyTorch URL (e.g., 12.6 -> cu126)
+          CUDA_WHL="cu${{ matrix.cuda }}"
+          CUDA_WHL="${CUDA_WHL//./}"
+          
+          # Install the latest PyTorch compatible with this specific CUDA version
+          pip install --upgrade pip
+          pip install torch torchvision opencv-python build --index-url https://download.pytorch.org/whl/$CUDA_WHL
+
+      - name: Dynamically Set Target Architectures
+        run: |
+          if [[ "${{ matrix.cuda }}" == "12.6" ]]; then
+            # CUDA 12.6 maxes out at Hopper (9.0)
+            echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0+PTX" >> $GITHUB_ENV
+          else
+            # CUDA 12.8 and 13.0 support Blackwell (10.0 and 12.0)
+            echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0;10.0;12.0+PTX" >> $GITHUB_ENV
+          fi
+
+      - name: Build the Fat Wheel
+        env:
+          # Passes the dynamic variable determined in the previous step
+          TORCH_CUDA_ARCH_LIST: ${{ env.ARCH_LIST }}
+        run: |
+          python -m build --wheel --no-isolation
+
+      - name: Upload Wheel as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Names the downloaded zip file cleanly so you know exactly what is inside
+          name: drtk-${{ matrix.os }}-py${{ matrix.python }}-cu${{ matrix.cuda }}
+          path: dist/*.whl
