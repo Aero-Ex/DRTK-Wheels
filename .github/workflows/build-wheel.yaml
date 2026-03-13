@@ -35,8 +35,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.30
         with:
           cuda: '${{ matrix.cuda }}.0'
-          log-file-suffix: 'py${{ matrix.python }}-pt${{ matrix.pytorch }}.txt'
-
+          log-file-suffix: 'py${{ matrix.python }}-pt${{ matrix.pytorch }}-cu${{ matrix.cuda }}.txt'
       - name: Install Standard Dependencies
         run: |
           python -m pip install --upgrade pip
