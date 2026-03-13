@@ -1,18 +1,20 @@
-name: Build DRTK Wheels (All Systems)
+name: Build DRTK Wheels
 
 on:
   workflow_dispatch:
 
 jobs:
   build_wheels:
-    name: Build (${{ matrix.os }}, Py ${{ matrix.python }}, CUDA ${{ matrix.cuda }})
+    # Notice the job name now includes PT version, this tells you the new code is running!
+    name: Build (${{ matrix.os }}, Py ${{ matrix.python }}, PT ${{ matrix.pytorch }}, CUDA ${{ matrix.cuda }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ['3.10', '3.11', '3.12', '3.13']
-        cuda: ['12.6', '12.8', '13.0']
+        os: [ubuntu-latest]
+        python: ['3.11']
+        pytorch: ['2.10.0']
+        cuda: ['12.8']
     
     defaults:
       run:
@@ -46,16 +48,15 @@ jobs:
           CUDA_WHL="cu${{ matrix.cuda }}"
           CUDA_WHL="${CUDA_WHL//./}"
           
-          # Installs PyTorch directly from their custom server
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/$CUDA_WHL
+          # Forces pip to install the exact PyTorch version from the matrix
+          pip install torch==${{ matrix.pytorch }} torchvision --index-url https://download.pytorch.org/whl/$CUDA_WHL
 
       - name: Dynamically Set Target Architectures
         run: |
           if [[ "${{ matrix.cuda }}" == "12.6" ]]; then
-            # CUDA 12.6 maxes out at Hopper (9.0)
             echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0+PTX" >> $GITHUB_ENV
           else
-            # CUDA 12.8 and 13.0 support Blackwell (10.0 and 12.0)
+            # 10.0 and 12.0 added for Blackwell on CUDA 12.8+
             echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0;10.0;12.0+PTX" >> $GITHUB_ENV
           fi
 
@@ -68,6 +69,6 @@ jobs:
       - name: Upload Wheel as Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Guarantees a 100% unique name for every job to prevent overwrites
-          name: drtk-${{ matrix.os }}-py${{ matrix.python }}-cu${{ matrix.cuda }}
+          # The artifact name now includes the PyTorch version to guarantee it is 100% unique
+          name: drtk-${{ matrix.os }}-py${{ matrix.python }}-pt${{ matrix.pytorch }}-cu${{ matrix.cuda }}
           path: dist/*.whl
