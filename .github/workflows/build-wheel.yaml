@@ -79,7 +79,10 @@ jobs:
           if rtti_old not in text:
               raise RuntimeError(f"Expected {rtti_old} in setup.py but did not find it.")
           text = text.replace(rtti_old, rtti_new)
-          text = text.replace('"/MT"', '"/MD"')
+          runtime_old, runtime_new = '"/MT"', '"/MD"'
+          if runtime_old not in text:
+              raise RuntimeError(f"Expected {runtime_old} in setup.py but did not find it.")
+          text = text.replace(runtime_old, runtime_new)
           setup_py.write_text(text, encoding="utf-8")
           PY
 
