@@ -71,6 +71,7 @@ jobs:
       - name: Build the Fat Wheel
         env:
           TORCH_CUDA_ARCH_LIST: ${{ env.ARCH_LIST }}
+          _CL_: /GR
         run: |
           python -m build --wheel --no-isolation
 
