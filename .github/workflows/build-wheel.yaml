@@ -30,11 +30,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-
+      
       - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
         with:
           cuda: '${{ matrix.cuda }}.0'
+          log-file-suffix: 'py${{ matrix.python }}-pt${{ matrix.pytorch }}.txt'
 
       - name: Install Standard Dependencies
         run: |
