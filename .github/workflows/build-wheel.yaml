@@ -60,6 +60,9 @@ jobs:
         run: |
           if [[ "${{ matrix.cuda }}" == "12.6" ]]; then
             echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0+PTX" >> $GITHUB_ENV
+          elif [[ "${{ matrix.cuda }}" == "13.0" ]]; then
+            # CUDA 13 no longer supports compute_70/compute_72.
+            echo "ARCH_LIST=7.5;8.0;8.6;8.7;8.9;9.0;10.0;12.0+PTX" >> $GITHUB_ENV
           else
             # 10.0 and 12.0 added for Blackwell on CUDA 12.8+
             echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0;10.0;12.0+PTX" >> $GITHUB_ENV
