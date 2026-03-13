@@ -11,10 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [windows-latest]
         python: ['3.10','3.11', '3.12', '3.13']
         pytorch: ['2.7.0', '2.8.0', '2.10.0']
-        cuda: ['12.6', '13.0']
+        cuda: ['12.6', '12.8', '13.0']
     
     defaults:
       run:
