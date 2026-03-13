@@ -31,7 +31,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.14
+        uses: Jimver/cuda-toolkit@v0.2.30
         with:
           # Appends .0 because the action expects full semantic versions
           cuda: '${{ matrix.cuda }}.0' 
