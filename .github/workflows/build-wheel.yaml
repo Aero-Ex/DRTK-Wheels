@@ -2,6 +2,11 @@ name: Build DRTK Wheels
 
 on:
   workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
 
 jobs:
   build_wheels:
@@ -92,9 +97,48 @@ jobs:
         run: |
           python -m build --wheel --no-isolation
 
+      - name: Rename wheel with build tag
+        env:
+          PT_VERSION: ${{ matrix.pytorch }}
+          CUDA_VERSION: ${{ matrix.cuda }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          pt = "".join(ch for ch in os.environ["PT_VERSION"] if ch.isdigit())
+          cu = "".join(ch for ch in os.environ["CUDA_VERSION"] if ch.isdigit())
+          build_tag = f"1pt{pt}cu{cu}"
+
+          for wheel_path in Path("dist").glob("*.whl"):
+              parts = wheel_path.stem.split("-")
+              if len(parts) == 5:
+                  distribution, version, python_tag, abi_tag, platform_tag = parts
+              elif len(parts) == 6:
+                  distribution, version, _old_build_tag, python_tag, abi_tag, platform_tag = parts
+              else:
+                  raise RuntimeError(f"Unexpected wheel filename format: {wheel_path.name}")
+              renamed = (
+                  f"{distribution}-{version}-{build_tag}-"
+                  f"{python_tag}-{abi_tag}-{platform_tag}.whl"
+              )
+              target = wheel_path.with_name(renamed)
+              if wheel_path != target:
+                  wheel_path.rename(target)
+                  print(f"Renamed {wheel_path.name} -> {target.name}")
+          PY
+
       - name: Upload Wheel as Artifact
         uses: actions/upload-artifact@v4
         with:
           # The artifact name now includes the PyTorch version to guarantee it is 100% unique
           name: drtk-${{ matrix.os }}-py${{ matrix.python }}-pt${{ matrix.pytorch }}-cu${{ matrix.cuda }}
           path: dist/*.whl
+
+      - name: Upload Wheel to Release page
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/*.whl
+          fail_on_unmatched_files: true
