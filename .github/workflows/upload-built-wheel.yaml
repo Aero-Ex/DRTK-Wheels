@@ -3,8 +3,8 @@ name: Upload Built Wheels to Release
 on:
   workflow_dispatch:
     inputs:
-      run_id:
-        description: 'Workflow run ID that contains built wheel artifact(s)'
+      run_ids:
+        description: 'Comma-separated workflow run IDs (e.g., 12345678, 87654321)'
         required: true
         type: string
       release_tag:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       artifact_name:
-        description: 'Optional artifact name to upload; leave empty to upload all artifacts from the run'
+        description: 'Optional artifact name to upload; leave empty to upload all'
         required: false
         type: string
 
@@ -24,65 +24,118 @@ jobs:
   upload_built_wheels:
     runs-on: ubuntu-latest
     steps:
-      - name: Download wheel artifact(s) from workflow run
+      - name: Download wheel artifact(s) from workflow runs
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.run_id }}
+          RUN_IDS: ${{ inputs.run_ids }}
           ARTIFACT_NAME: ${{ inputs.artifact_name }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          artifacts_json="$(mktemp)"
-          response_json="$(mktemp)"
-          echo "[]" > "$artifacts_json"
+          
+          # Split comma-separated run IDs into an array
+          IFS=',' read -ra RUN_ID_ARRAY <<< "$RUN_IDS"
+          
+          for RUN_ID in "${RUN_ID_ARRAY[@]}"; do
+            # Trim whitespace from the ID
+            RUN_ID=$(echo "$RUN_ID" | xargs)
+            if [ -z "$RUN_ID" ]; then continue; fi
+            
+            echo "========================================="
+            echo "Processing Run ID: $RUN_ID"
+            echo "========================================="
+            
+            artifacts_json="$(mktemp)"
+            response_json="$(mktemp)"
+            echo "[]" > "$artifacts_json"
 
-          page=1
-          while true; do
-            curl -fsSL \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100&page=${page}" \
-              > "$response_json"
-            jq -s '.[0] + .[1].artifacts' "$artifacts_json" "$response_json" > "${artifacts_json}.next"
-            mv "${artifacts_json}.next" "$artifacts_json"
+            page=1
+            while true; do
+              curl -fsSL \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100&page=${page}" \
+                > "$response_json"
+              
+              jq -s '.[0] + .[1].artifacts' "$artifacts_json" "$response_json" > "${artifacts_json}.next"
+              mv "${artifacts_json}.next" "$artifacts_json"
 
-            if [ "$(jq '.artifacts | length' "$response_json")" -lt 100 ]; then
-              break
+              if [ "$(jq '.artifacts | length' "$response_json")" -lt 100 ]; then
+                break
+              fi
+              page=$((page + 1))
+            done
+
+            mapfile -t artifacts < <(
+              jq -r --arg artifact_name "$ARTIFACT_NAME" \
+                '.[] | select(.expired == false) | select($artifact_name == "" or .name == $artifact_name) | @base64' \
+                "$artifacts_json"
+            )
+
+            if [ "${#artifacts[@]}" -eq 0 ]; then
+              echo "No matching or non-expired artifacts were found in run ${RUN_ID}."
+              continue
             fi
-            page=$((page + 1))
-          done
 
-          mapfile -t artifacts < <(
-            jq -r --arg artifact_name "$ARTIFACT_NAME" \
-              '.[] | select(.expired == false) | select($artifact_name == "" or .name == $artifact_name) | @base64' \
-              "$artifacts_json"
-          )
-
-          if [ "${#artifacts[@]}" -eq 0 ]; then
-            if [ -n "${ARTIFACT_NAME}" ]; then
-              echo "Artifact '${ARTIFACT_NAME}' was not found (or is expired) in run ${RUN_ID}."
-            else
-              echo "No non-expired artifacts were found in run ${RUN_ID}."
-            fi
-            exit 1
-          fi
-
-          for artifact in "${artifacts[@]}"; do
-            artifact_json="$(echo "$artifact" | base64 --decode)"
-            artifact_id="$(echo "$artifact_json" | jq -r '.id')"
-            artifact_name="$(echo "$artifact_json" | jq -r '.name')"
-            archive="artifact-${artifact_id}.zip"
-            echo "Downloading artifact ${artifact_name} (${artifact_id})"
-            curl -fsSL -L \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-              -o "$archive"
-            unzip -o -q "$archive" -d dist
+            for artifact in "${artifacts[@]}"; do
+              artifact_json="$(echo "$artifact" | base64 --decode)"
+              artifact_id="$(echo "$artifact_json" | jq -r '.id')"
+              artifact_name="$(echo "$artifact_json" | jq -r '.name')"
+              archive="artifact-${artifact_id}.zip"
+              
+              echo "Downloading artifact ${artifact_name} (${artifact_id})"
+              curl -fsSL -L \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                -o "$archive"
+              
+              # Extract to a temp folder to prevent overwriting collisions
+              temp_dir="temp_${artifact_id}"
+              mkdir -p "$temp_dir"
+              unzip -o -q "$archive" -d "$temp_dir"
+              
+              # Process and rename each wheel
+              for whl in "$temp_dir"/*.whl; do
+                if [ -f "$whl" ]; then
+                  base_whl=$(basename "$whl")
+                  
+                  # 1. Extract pt and cu versions from the artifact_name
+                  # (e.g., "drtk-ubuntu-latest-py3.10-pt2.7.0-cu12.8")
+                  pt_match=$(echo "$artifact_name" | grep -o 'pt[0-9.]*' || true)
+                  cu_match=$(echo "$artifact_name" | grep -o 'cu[0-9.]*' || true)
+                  
+                  build_tag=""
+                  if [ -n "$pt_match" ] && [ -n "$cu_match" ]; then
+                    build_tag="+${pt_match}.${cu_match}"  # e.g., +pt2.7.0.cu12.8
+                  elif [ -n "$pt_match" ]; then
+                    build_tag="+${pt_match}"
+                  else
+                    # Fallback just in case standard artifacts don't have pt/cu in the name
+                    safe_suffix=$(echo "$artifact_name" | sed 's/[^a-zA-Z0-9]/_/g')
+                    build_tag="+${safe_suffix}"
+                  fi
+                  
+                  # 2. Split standard wheel name to insert the build_tag
+                  # e.g., drtk-0.1.0-cp310-cp310-linux_x86_64.whl
+                  dist_version=$(echo "$base_whl" | cut -d'-' -f1,2) # "drtk-0.1.0"
+                  rest=$(echo "$base_whl" | cut -d'-' -f3-)          # "cp310-cp310-linux_x86_64.whl"
+                  
+                  # 3. Create the unique final name
+                  unique_whl="${dist_version}${build_tag}-${rest}"
+                  
+                  mv "$whl" "dist/$unique_whl"
+                  echo "  -> Extracted and renamed to: $unique_whl"
+                fi
+              done
+              
+              # Cleanup temp files
+              rm -rf "$temp_dir" "$archive"
+            done
           done
 
           if ! ls dist/*.whl 1> /dev/null 2>&1; then
-            echo "No wheel files were found in downloaded artifacts."
+            echo "No wheel files were found in any downloaded artifacts."
             exit 1
           fi
 
