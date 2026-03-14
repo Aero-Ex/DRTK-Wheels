@@ -104,23 +104,35 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import re
           from pathlib import Path
 
-          pt = "".join(ch for ch in os.environ["PT_VERSION"] if ch.isdigit())
-          cu = "".join(ch for ch in os.environ["CUDA_VERSION"] if ch.isdigit())
+          pt = os.environ["PT_VERSION"].replace(".", "_")
+          cu = os.environ["CUDA_VERSION"].replace(".", "_")
+          # PEP 427 build tags must begin with a digit; we use "1" as the build number prefix.
           build_tag = f"1pt{pt}cu{cu}"
+          wheel_name_pattern = re.compile(
+              r"^(?P<distribution>[^-]+)-(?P<version>[^-]+)"
+              r"(?:-(?P<build>[0-9][0-9A-Za-z_]*))?"
+              r"-(?P<python_tag>[^-]+)-(?P<abi_tag>[^-]+)-(?P<platform_tag>[^-]+)$"
+          )
 
           for wheel_path in Path("dist").glob("*.whl"):
-              parts = wheel_path.stem.split("-")
-              if len(parts) == 5:
-                  distribution, version, python_tag, abi_tag, platform_tag = parts
-              elif len(parts) == 6:
-                  distribution, version, _old_build_tag, python_tag, abi_tag, platform_tag = parts
-              else:
-                  raise RuntimeError(f"Unexpected wheel filename format: {wheel_path.name}")
+              match = wheel_name_pattern.fullmatch(wheel_path.stem)
+              if not match:
+                  raise RuntimeError(
+                      "Unexpected wheel filename format: "
+                      f"{wheel_path.name}. Expected format: "
+                      "distribution-version[-build_tag]-python_tag-abi_tag-platform_tag.whl"
+                  )
+              parts = match.groupdict()
+              if parts["build"]:
+                  raise RuntimeError(
+                      f"Wheel already has build tag {parts['build']}: {wheel_path.name}"
+                  )
               renamed = (
-                  f"{distribution}-{version}-{build_tag}-"
-                  f"{python_tag}-{abi_tag}-{platform_tag}.whl"
+                  f"{parts['distribution']}-{parts['version']}-{build_tag}-"
+                  f"{parts['python_tag']}-{parts['abi_tag']}-{parts['platform_tag']}.whl"
               )
               target = wheel_path.with_name(renamed)
               if wheel_path != target:
@@ -139,6 +151,5 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
           files: dist/*.whl
           fail_on_unmatched_files: true
