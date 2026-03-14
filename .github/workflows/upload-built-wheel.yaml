@@ -1,0 +1,94 @@
+name: Upload Built Wheels to Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Workflow run ID that contains built wheel artifact(s)'
+        required: true
+        type: string
+      release_tag:
+        description: 'Release tag to upload wheel(s) to (e.g. v0.1.0)'
+        required: true
+        type: string
+      artifact_name:
+        description: 'Optional artifact name to upload; leave empty to upload all artifacts from the run'
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  upload_built_wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheel artifact(s) from workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          artifacts_json="$(mktemp)"
+          response_json="$(mktemp)"
+          echo "[]" > "$artifacts_json"
+
+          page=1
+          while true; do
+            curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100&page=${page}" \
+              > "$response_json"
+            jq -s '.[0] + .[1].artifacts' "$artifacts_json" "$response_json" > "${artifacts_json}.next"
+            mv "${artifacts_json}.next" "$artifacts_json"
+
+            if [ "$(jq '.artifacts | length' "$response_json")" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
+
+          mapfile -t artifacts < <(
+            jq -r --arg artifact_name "$ARTIFACT_NAME" \
+              '.[] | select(.expired == false) | select($artifact_name == "" or .name == $artifact_name) | @base64' \
+              "$artifacts_json"
+          )
+
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            if [ -n "${ARTIFACT_NAME}" ]; then
+              echo "Artifact '${ARTIFACT_NAME}' was not found (or is expired) in run ${RUN_ID}."
+            else
+              echo "No non-expired artifacts were found in run ${RUN_ID}."
+            fi
+            exit 1
+          fi
+
+          for artifact in "${artifacts[@]}"; do
+            artifact_json="$(echo "$artifact" | base64 --decode)"
+            artifact_id="$(echo "$artifact_json" | jq -r '.id')"
+            artifact_name="$(echo "$artifact_json" | jq -r '.name')"
+            archive="artifact-${artifact_id}.zip"
+            echo "Downloading artifact ${artifact_name} (${artifact_id})"
+            curl -fsSL -L \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              -o "$archive"
+            unzip -o -q "$archive" -d dist
+          done
+
+          if ! ls dist/*.whl 1> /dev/null 2>&1; then
+            echo "No wheel files were found in downloaded artifacts."
+            exit 1
+          fi
+
+      - name: Upload wheel(s) to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: dist/*.whl
+          fail_on_unmatched_files: true

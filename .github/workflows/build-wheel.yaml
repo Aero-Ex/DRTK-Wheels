@@ -2,6 +2,16 @@ name: Build DRTK Wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to upload wheels to when run manually (e.g. v0.1.0)'
+        required: false
+        type: string
+  release:
+    types: [published]
+
+permissions:
+  contents: write
 
 jobs:
   build_wheels:
@@ -68,18 +78,22 @@ jobs:
             echo "ARCH_LIST=7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0;10.0;12.0+PTX" >> $GITHUB_ENV
           fi
 
-      - name: Patch Windows RTTI compile flag
+      - name: Patch Windows compile flags
         if: runner.os == 'Windows'
         run: |
           python - <<'PY'
           from pathlib import Path
           setup_py = Path("setup.py")
           text = setup_py.read_text(encoding="utf-8")
-          old = '"/GR-"'
-          new = '"/GR"'
-          if old not in text:
-              raise RuntimeError(f"Expected {old} in setup.py but did not find it.")
-          setup_py.write_text(text.replace(old, new), encoding="utf-8")
+          rtti_old, rtti_new = '"/GR-"', '"/GR"'
+          if rtti_old not in text:
+              raise RuntimeError(f"Expected {rtti_old} in setup.py but did not find it.")
+          text = text.replace(rtti_old, rtti_new)
+          runtime_old, runtime_new = '"/MT"', '"/MD"'
+          if runtime_old not in text:
+              raise RuntimeError(f"Expected {runtime_old} in setup.py but did not find it.")
+          text = text.replace(runtime_old, runtime_new)
+          setup_py.write_text(text, encoding="utf-8")
           PY
 
       - name: Build the Fat Wheel
@@ -88,9 +102,60 @@ jobs:
         run: |
           python -m build --wheel --no-isolation
 
+      - name: Rename wheel with build tag
+        env:
+          PT_VERSION: ${{ matrix.pytorch }}
+          CUDA_VERSION: ${{ matrix.cuda }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          pt = os.environ["PT_VERSION"].replace(".", "_")
+          cu = os.environ["CUDA_VERSION"].replace(".", "_")
+          # PEP 427 build tags must begin with a digit; we use "1" as the build number prefix.
+          build_tag = f"1pt{pt}cu{cu}"
+          wheel_name_pattern = re.compile(
+              r"^(?P<distribution>[^-]+)-(?P<version>[^-]+)"
+              r"(?:-(?P<build>[0-9][0-9A-Za-z_]*))?"
+              r"-(?P<python_tag>[^-]+)-(?P<abi_tag>[^-]+)-(?P<platform_tag>[^-]+)$"
+          )
+
+          for wheel_path in Path("dist").glob("*.whl"):
+              match = wheel_name_pattern.fullmatch(wheel_path.stem)
+              if not match:
+                  raise RuntimeError(
+                      "Unexpected wheel filename format: "
+                      f"{wheel_path.name}. Expected format: "
+                      "distribution-version[-build_tag]-python_tag-abi_tag-platform_tag.whl"
+                  )
+              parts = match.groupdict()
+              if parts["build"]:
+                  raise RuntimeError(
+                      f"Wheel already has build tag {parts['build']}: {wheel_path.name}"
+                  )
+              renamed = (
+                  f"{parts['distribution']}-{parts['version']}-{build_tag}-"
+                  f"{parts['python_tag']}-{parts['abi_tag']}-{parts['platform_tag']}.whl"
+              )
+              target = wheel_path.with_name(renamed)
+              if wheel_path != target:
+                  wheel_path.rename(target)
+                  print(f"Renamed {wheel_path.name} -> {target.name}")
+          PY
+
       - name: Upload Wheel as Artifact
         uses: actions/upload-artifact@v4
         with:
           # The artifact name now includes the PyTorch version to guarantee it is 100% unique
           name: drtk-${{ matrix.os }}-py${{ matrix.python }}-pt${{ matrix.pytorch }}-cu${{ matrix.cuda }}
           path: dist/*.whl
+
+      - name: Upload Wheel to Release page
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+          files: dist/*.whl
+          fail_on_unmatched_files: true
