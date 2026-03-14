@@ -2,6 +2,11 @@ name: Build DRTK Wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to upload wheels to when run manually (e.g. v0.1.0)'
+        required: false
+        type: string
   release:
     types: [published]
 
@@ -148,8 +153,9 @@ jobs:
           path: dist/*.whl
 
       - name: Upload Wheel to Release page
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name || inputs.release_tag }}
           files: dist/*.whl
           fail_on_unmatched_files: true
